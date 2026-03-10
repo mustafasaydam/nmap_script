@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich import print as rprint
 from datetime import datetime
-from html_reporter import HTMLReporter
-
-console = Console()
+import os
 
 class PortComparator:
     def __init__(self, old_scan, new_scan):
@@ -96,120 +90,184 @@ class PortComparator:
         if changes:
             self.differences['service_changes'][host] = changes
     
-    def generate_report(self, show_html=True):
-        """Karşılaştırma raporu oluştur"""
+    def generate_report(self):
+        """Karşılaştırma raporu oluştur - Terminal çıktısı"""
         
         old_date = datetime.fromisoformat(self.old['scan_date']).strftime("%Y-%m-%d %H:%M:%S")
         new_date = datetime.fromisoformat(self.new['scan_date']).strftime("%Y-%m-%d %H:%M:%S")
         
-        # Özet Panel
-        summary = f"""
-[bold cyan]📅 İlk Tarama:[/bold cyan] {old_date}
-[bold cyan]📅 Son Tarama:[/bold cyan] {new_date}
-
-[bold green]🆕 Yeni Hostlar:[/bold green] {len(self.differences['new_hosts'])}
-[bold red]❌ Kapanan Hostlar:[/bold red] {len(self.differences['removed_hosts'])}
-[bold yellow]🔓 Yeni Portlar:[/bold yellow] {sum(len(v) for v in self.differences['new_ports'].values())}
-[bold blue]🔒 Kapanan Portlar:[/bold blue] {sum(len(v) for v in self.differences['closed_ports'].values())}
-        """
-        
-        console.print(Panel(summary, title="📊 Karşılaştırma Özeti", border_style="cyan"))
+        print("\n" + "="*80)
+        print("KARŞILAŞTIRMA RAPORU".center(80))
+        print("="*80)
+        print(f"İlk Tarama: {old_date}")
+        print(f"Son Tarama: {new_date}")
+        print("-"*80)
+        print(f"Yeni Hostlar    : {len(self.differences['new_hosts'])}")
+        print(f"Kapanan Hostlar : {len(self.differences['removed_hosts'])}")
+        print(f"Yeni Portlar    : {sum(len(v) for v in self.differences['new_ports'].values())}")
+        print(f"Kapanan Portlar : {sum(len(v) for v in self.differences['closed_ports'].values())}")
+        print(f"Servis Değişikliği: {sum(len(v) for v in self.differences['service_changes'].values())}")
+        print("="*80)
         
         # Yeni Hostlar
         if self.differences['new_hosts']:
-            table = Table(title="🆕 Yeni Hostlar")
-            table.add_column("IP Adresi", style="green")
-            table.add_column("Hostname", style="cyan")
-            table.add_column("Açık Portlar", style="yellow")
-            
+            print("\n[+] YENİ HOSTLAR:")
             for host in self.differences['new_hosts']:
                 host_data = self.new['hosts'][host]
                 ports = self._get_ports(host_data)
                 port_list = ', '.join([f"{p[1]}/{p[0]}" for p in ports])
-                table.add_row(host, host_data['hostname'], port_list[:50])
-            
-            console.print(table)
+                print(f"  {host} - {host_data['hostname']} - Portlar: {port_list}")
         
         # Kapanan Hostlar
         if self.differences['removed_hosts']:
-            table = Table(title="❌ Kapanan Hostlar")
-            table.add_column("IP Adresi", style="red")
-            table.add_column("Hostname", style="cyan")
-            table.add_column("Eski Portlar", style="yellow")
-            
+            print("\n[-] KAPANAN HOSTLAR:")
             for host in self.differences['removed_hosts']:
                 host_data = self.old['hosts'][host]
                 ports = self._get_ports(host_data)
                 port_list = ', '.join([f"{p[1]}/{p[0]}" for p in ports])
-                table.add_row(host, host_data['hostname'], port_list[:50])
-            
-            console.print(table)
+                print(f"  {host} - {host_data['hostname']} - Eski Portlar: {port_list}")
         
         # Yeni Portlar
         if self.differences['new_ports']:
-            table = Table(title="🔓 Yeni Açılan Portlar")
-            table.add_column("IP Adresi", style="green")
-            table.add_column("Port/Proto", style="yellow")
-            table.add_column("Servis", style="cyan")
-            table.add_column("Versiyon", style="magenta")
-            
+            print("\n[+] YENİ AÇILAN PORTLAR:")
             for host, ports in self.differences['new_ports'].items():
                 for protocol, port in ports:
                     service = self.new['hosts'][host]['protocols'][protocol][port]
-                    table.add_row(
-                        host,
-                        f"{port}/{protocol}",
-                        service['name'],
-                        f"{service['product']} {service['version']}".strip()
-                    )
-            
-            console.print(table)
+                    version = f"{service['product']} {service['version']}".strip()
+                    print(f"  {host:15} {port}/{protocol:8} {service['name']:15} {version}")
         
         # Kapanan Portlar
         if self.differences['closed_ports']:
-            table = Table(title="🔒 Kapanan Portlar")
-            table.add_column("IP Adresi", style="red")
-            table.add_column("Port/Proto", style="yellow")
-            table.add_column("Eski Servis", style="cyan")
-            table.add_column("Eski Versiyon", style="magenta")
-            
+            print("\n[-] KAPANAN PORTLAR:")
             for host, ports in self.differences['closed_ports'].items():
                 for protocol, port in ports:
                     service = self.old['hosts'][host]['protocols'][protocol][port]
-                    table.add_row(
-                        host,
-                        f"{port}/{protocol}",
-                        service['name'],
-                        f"{service['product']} {service['version']}".strip()
-                    )
-            
-            console.print(table)
+                    version = f"{service['product']} {service['version']}".strip()
+                    print(f"  {host:15} {port}/{protocol:8} {service['name']:15} {version}")
         
         # Servis Değişiklikleri
         if self.differences['service_changes']:
-            table = Table(title="🔄 Servis Değişiklikleri")
-            table.add_column("IP Adresi", style="cyan")
-            table.add_column("Port/Proto", style="yellow")
-            table.add_column("Eski Servis", style="red")
-            table.add_column("Yeni Servis", style="green")
-            
+            print("\n[*] SERVİS DEĞİŞİKLİKLERİ:")
             for host, changes in self.differences['service_changes'].items():
                 for change in changes:
-                    old = f"{change['old']['name']} {change['old']['product']} {change['old']['version']}".strip()
-                    new = f"{change['new']['name']} {change['new']['product']} {change['new']['version']}".strip()
-                    table.add_row(
-                        host,
-                        f"{change['port']}/{change['protocol']}",
-                        old,
-                        new
-                    )
-            
-            console.print(table)
+                    old_ver = f"{change['old']['product']} {change['old']['version']}".strip()
+                    new_ver = f"{change['new']['product']} {change['new']['version']}".strip()
+                    print(f"  {host:15} {change['port']}/{change['protocol']:8}")
+                    print(f"      Eski: {change['old']['name']} {old_ver}")
+                    print(f"      Yeni: {change['new']['name']} {new_ver}")
         
-        # HTML Raporu
-        if show_html:
-            reporter = HTMLReporter(self.old, self.new, self.differences)
-            html_file = f"comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            reporter.generate_html(html_file)
+        # HTML raporu oluştur
+        self._generate_html_report()
         
         return self.differences
+    
+    def _generate_html_report(self):
+        """Basit HTML rapor oluştur"""
+        
+        old_date = datetime.fromisoformat(self.old['scan_date']).strftime("%Y-%m-%d %H:%M:%S")
+        new_date = datetime.fromisoformat(self.new['scan_date']).strftime("%Y-%m-%d %H:%M:%S")
+        
+        filename = f"comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Port Tarama Karşılaştırma</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 5px; }}
+        h1 {{ color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }}
+        .stats {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 20px 0; }}
+        .stat {{ background: #f9f9f9; padding: 15px; border-radius: 5px; text-align: center; }}
+        .stat.new {{ border-left: 5px solid #4CAF50; }}
+        .stat.removed {{ border-left: 5px solid #f44336; }}
+        .new-host {{ color: #4CAF50; }}
+        .removed-host {{ color: #f44336; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        th {{ background: #4CAF50; color: white; padding: 10px; text-align: left; }}
+        td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
+        tr:hover {{ background: #f5f5f5; }}
+        .date {{ color: #666; font-size: 0.9em; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Port Tarama Karşılaştırma Raporu</h1>
+        <div class="date">
+            <p>İlk Tarama: {old_date}</p>
+            <p>Son Tarama: {new_date}</p>
+        </div>
+        
+        <div class="stats">
+            <div class="stat new">
+                <h3>Yeni Host</h3>
+                <h2>{len(self.differences['new_hosts'])}</h2>
+            </div>
+            <div class="stat removed">
+                <h3>Kapanan Host</h3>
+                <h2>{len(self.differences['removed_hosts'])}</h2>
+            </div>
+            <div class="stat new">
+                <h3>Yeni Port</h3>
+                <h2>{sum(len(v) for v in self.differences['new_ports'].values())}</h2>
+            </div>
+            <div class="stat removed">
+                <h3>Kapanan Port</h3>
+                <h2>{sum(len(v) for v in self.differences['closed_ports'].values())}</h2>
+            </div>
+            <div class="stat">
+                <h3>Servis Değişikliği</h3>
+                <h2>{sum(len(v) for v in self.differences['service_changes'].values())}</h2>
+            </div>
+        </div>
+"""
+        
+        # Yeni Hostlar
+        if self.differences['new_hosts']:
+            html += "<h2 class='new-host'>🆕 Yeni Hostlar</h2><table><tr><th>IP</th><th>Hostname</th><th>Portlar</th></tr>"
+            for host in self.differences['new_hosts']:
+                host_data = self.new['hosts'][host]
+                ports = self._get_ports(host_data)
+                port_list = ', '.join([f"{p[1]}/{p[0]}" for p in ports])
+                html += f"<tr><td>{host}</td><td>{host_data['hostname']}</td><td>{port_list}</td></tr>"
+            html += "</table>"
+        
+        # Yeni Portlar
+        if self.differences['new_ports']:
+            html += "<h2 class='new-host'>🔓 Yeni Açılan Portlar</h2><table><tr><th>IP</th><th>Port/Proto</th><th>Servis</th><th>Versiyon</th></tr>"
+            for host, ports in self.differences['new_ports'].items():
+                for protocol, port in ports:
+                    service = self.new['hosts'][host]['protocols'][protocol][port]
+                    version = f"{service['product']} {service['version']}".strip()
+                    html += f"<tr><td>{host}</td><td>{port}/{protocol}</td><td>{service['name']}</td><td>{version}</td></tr>"
+            html += "</table>"
+        
+        # Kapanan Portlar
+        if self.differences['closed_ports']:
+            html += "<h2 class='removed-host'>🔒 Kapanan Portlar</h2><table><tr><th>IP</th><th>Port/Proto</th><th>Eski Servis</th><th>Eski Versiyon</th></tr>"
+            for host, ports in self.differences['closed_ports'].items():
+                for protocol, port in ports:
+                    service = self.old['hosts'][host]['protocols'][protocol][port]
+                    version = f"{service['product']} {service['version']}".strip()
+                    html += f"<tr><td>{host}</td><td>{port}/{protocol}</td><td>{service['name']}</td><td>{version}</td></tr>"
+            html += "</table>"
+        
+        html += """
+    </div>
+</body>
+</html>"""
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(html)
+        
+        print(f"\n[+] HTML rapor oluşturuldu: {filename}")
+        
+        # Firefox ile aç (Kali'de varsayılan)
+        try:
+            os.system(f"firefox {filename} &")
+        except:
+            try:
+                os.system(f"xdg-open {filename} &")
+            except:
+                pass
