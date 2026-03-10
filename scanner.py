@@ -3,14 +3,8 @@ import subprocess
 import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
-import ipaddress
 import os
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-from rich.table import Table
-from rich import print as rprint
-
-console = Console()
+import sys
 
 class PortScanner:
     def __init__(self):
@@ -18,71 +12,66 @@ class PortScanner:
         
     def _find_nmap(self):
         """Nmap yolunu bul"""
+        # Kali'de nmap genellikle /usr/bin/nmap
+        common_paths = [
+            '/usr/bin/nmap',
+            '/usr/local/bin/nmap',
+            '/bin/nmap'
+        ]
+        
+        for path in common_paths:
+            if os.path.exists(path):
+                return path
+        
+        # PATH'te ara
         try:
-            # Windows için
-            if os.name == 'nt':
-                common_paths = [
-                    r"C:\Program Files (x86)\Nmap\nmap.exe",
-                    r"C:\Program Files\Nmap\nmap.exe"
-                ]
-                for path in common_paths:
-                    if os.path.exists(path):
-                        return path
-            
-            # Linux/Mac için (PATH'te ara)
             result = subprocess.run(['which', 'nmap'], capture_output=True, text=True)
             if result.returncode == 0:
                 return result.stdout.strip()
-                
-        except Exception as e:
-            console.print(f"[yellow]Nmap bulunamadı: {e}[/yellow]")
+        except:
+            pass
         
-        return 'nmap'  # Varsayılan olarak nmap dene
+        return 'nmap'  # Varsayılan
     
     def scan_targets(self, targets, ports="1-1000"):
         """Hedefleri tara"""
         
-        # Nmap komutunu oluştur
+        print(f"\n[+] Nmap taraması başlıyor: {targets}")
+        print(f"[+] Port aralığı: {ports}")
+        print("-" * 60)
+        
+        # Nmap komutunu oluştur - Kali için optimize edilmiş
         cmd = [
             self.nmap_path,
-            '-sS',  # SYN stealth scan
-            '-sV',  # Version detection
-            '-O',   # OS detection
-            '--script', 'default',  # Default script scan
+            '-sS',      # SYN stealth scan
+            '-sV',      # Version detection
+            '-O',       # OS detection
+            '-T4',      # Daha hızlı tarama
+            '--open',   # Sadece açık portlar
             '-p', ports,
-            '-oX', '-',  # XML output to stdout
-            '--open',  # Sadece açık portları göster
+            '-oX', '-', # XML output
             targets
         ]
         
-        console.print(f"[cyan]🚀 Nmap komutu: {' '.join(cmd)}[/cyan]")
+        print(f"[+] Komut: {' '.join(cmd)}")
         
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            console=console
-        ) as progress:
+        try:
+            # Nmap çalıştır
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
             
-            task = progress.add_task("[cyan]Tarama yapılıyor...", total=None)
+            if result.returncode != 0:
+                print(f"[-] Nmap hatası: {result.stderr}")
+                return None
             
-            try:
-                # Nmap çalıştır
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1 saat timeout
-                
-                if result.returncode != 0:
-                    console.print(f"[red]Nmap hatası: {result.stderr}[/red]")
-                    return None
-                
-                # XML çıktısını parse et
-                return self._parse_nmap_xml(result.stdout)
-                
-            except subprocess.TimeoutExpired:
-                console.print("[red]❌ Tarama zaman aşımına uğradı![/red]")
-                return None
-            except Exception as e:
-                console.print(f"[red]❌ Tarama hatası: {str(e)}[/red]")
-                return None
+            # XML çıktısını parse et
+            return self._parse_nmap_xml(result.stdout)
+            
+        except subprocess.TimeoutExpired:
+            print("[-] Tarama zaman aşımına uğradı!")
+            return None
+        except Exception as e:
+            print(f"[-] Tarama hatası: {str(e)}")
+            return None
     
     def _parse_nmap_xml(self, xml_output):
         """Nmap XML çıktısını parse et"""
@@ -163,8 +152,7 @@ class PortScanner:
                     if os_match is not None:
                         ports_info['os'] = {
                             'name': os_match.get('name', ''),
-                            'accuracy': os_match.get('accuracy', ''),
-                            'line': os_match.get('line', '')
+                            'accuracy': os_match.get('accuracy', '')
                         }
                 
                 results['hosts'][ip] = {
@@ -177,7 +165,7 @@ class PortScanner:
             return results
             
         except ET.ParseError as e:
-            console.print(f"[red]XML parse hatası: {e}[/red]")
+            print(f"[-] XML parse hatası: {e}")
             return None
     
     def save_results(self, results):
@@ -193,11 +181,11 @@ class PortScanner:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
             
-            console.print(f"[green]✅ Sonuçlar kaydedildi: {filename}[/green]")
+            print(f"[+] Sonuçlar kaydedildi: {filename}")
             return filename
             
         except Exception as e:
-            console.print(f"[red]❌ Dosya kaydetme hatası: {e}[/red]")
+            print(f"[-] Dosya kaydetme hatası: {e}")
             return None
     
     def load_results(self, filename):
@@ -206,7 +194,7 @@ class PortScanner:
             with open(filename, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            console.print(f"[red]❌ Dosya yükleme hatası: {e}[/red]")
+            print(f"[-] Dosya yükleme hatası: {e}")
             return None
     
     def display_summary(self, results):
@@ -214,25 +202,28 @@ class PortScanner:
         if not results:
             return
         
-        table = Table(title="📊 Tarama Özeti")
-        table.add_column("IP Adresi", style="cyan")
-        table.add_column("Hostname", style="green")
-        table.add_column("Açık Port", style="yellow")
-        table.add_column("Servis", style="magenta")
-        table.add_column("Versiyon", style="blue")
+        print("\n" + "="*80)
+        print("TARAMA SONUÇLARI".center(80))
+        print("="*80)
         
         total_ports = 0
         for ip, host in results['hosts'].items():
+            print(f"\n[+] Host: {ip}")
+            if host['hostname']:
+                print(f"    Hostname: {host['hostname']}")
+            if host.get('os', {}).get('name'):
+                print(f"    İşletim Sistemi: {host['os']['name']} (Doğruluk: {host['os']['accuracy']}%)")
+            
+            print("    Açık Portlar:")
             for protocol, ports in host['protocols'].items():
                 for port, service in ports.items():
                     total_ports += 1
-                    table.add_row(
-                        ip,
-                        host['hostname'][:20] if host['hostname'] else '-',
-                        f"{port}/{protocol}",
-                        service['name'],
-                        f"{service['product']} {service['version']}".strip() or '-'
-                    )
+                    version = f"{service['product']} {service['version']}".strip()
+                    if version:
+                        print(f"      {port}/{protocol:<8} {service['name']:<15} {version}")
+                    else:
+                        print(f"      {port}/{protocol:<8} {service['name']}")
         
-        console.print(f"\n[bold]Toplam Host: {len(results['hosts'])} | Toplam Açık Port: {total_ports}[/bold]")
-        console.print(table)
+        print("\n" + "-"*80)
+        print(f"Toplam Host: {len(results['hosts'])} | Toplam Açık Port: {total_ports}")
+        print("="*80)
