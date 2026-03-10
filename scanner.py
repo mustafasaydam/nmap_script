@@ -1,151 +1,238 @@
 #!/usr/bin/env python3
 import subprocess
 import json
-import datetime
-import re
 import xml.etree.ElementTree as ET
+from datetime import datetime
+import ipaddress
+import os
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.table import Table
+from rich import print as rprint
 
 console = Console()
 
 class PortScanner:
     def __init__(self):
-        self.nmap_path = "/usr/bin/nmap"  # Kali'de nmap yolu
+        self.nmap_path = self._find_nmap()
         
-    def scan_targets(self, targets, ports="1-1000", arguments="-sV -T4"):
-        """
-        Hedef IP'leri nmap komutu ile tarar
-        """
-        results = {
-            'scan_date': datetime.datetime.now().isoformat(),
-            'targets': targets,
-            'ports_scanned': ports,
-            'hosts': {}
-        }
-        
-        console.print(f"[bold cyan]🔍 Tarama başlatılıyor: {targets}[/bold cyan]")
-        console.print(f"[dim]Port aralığı: {ports}[/dim]")
-        console.print(f"[dim]Nmap argümanları: {arguments}[/dim]")
-        
+    def _find_nmap(self):
+        """Nmap yolunu bul"""
         try:
-            # Nmap komutunu hazırla
-            cmd = [
-                self.nmap_path,
-                '-oX', '-',  # XML çıktı
-                '-p', ports,
-                '--open',  # Sadece açık portlar
-            ]
+            # Windows için
+            if os.name == 'nt':
+                common_paths = [
+                    r"C:\Program Files (x86)\Nmap\nmap.exe",
+                    r"C:\Program Files\Nmap\nmap.exe"
+                ]
+                for path in common_paths:
+                    if os.path.exists(path):
+                        return path
             
-            # Argümanları ekle
-            cmd.extend(arguments.split())
-            cmd.append(targets)
-            
-            console.print(f"[dim]Çalıştırılan komut: {' '.join(cmd)}[/dim]")
-            
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                console=console
-            ) as progress:
+            # Linux/Mac için (PATH'te ara)
+            result = subprocess.run(['which', 'nmap'], capture_output=True, text=True)
+            if result.returncode == 0:
+                return result.stdout.strip()
                 
-                task = progress.add_task("[cyan]Nmap taranıyor...", total=None)
-                
-                # Nmap'i çalıştır
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except Exception as e:
+            console.print(f"[yellow]Nmap bulunamadı: {e}[/yellow]")
+        
+        return 'nmap'  # Varsayılan olarak nmap dene
+    
+    def scan_targets(self, targets, ports="1-1000"):
+        """Hedefleri tara"""
+        
+        # Nmap komutunu oluştur
+        cmd = [
+            self.nmap_path,
+            '-sS',  # SYN stealth scan
+            '-sV',  # Version detection
+            '-O',   # OS detection
+            '--script', 'default',  # Default script scan
+            '-p', ports,
+            '-oX', '-',  # XML output to stdout
+            '--open',  # Sadece açık portları göster
+            targets
+        ]
+        
+        console.print(f"[cyan]🚀 Nmap komutu: {' '.join(cmd)}[/cyan]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            console=console
+        ) as progress:
+            
+            task = progress.add_task("[cyan]Tarama yapılıyor...", total=None)
+            
+            try:
+                # Nmap çalıştır
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1 saat timeout
                 
                 if result.returncode != 0:
                     console.print(f"[red]Nmap hatası: {result.stderr}[/red]")
                     return None
                 
-                progress.update(task, completed=100)
-            
-            # XML çıktısını parse et
-            root = ET.fromstring(result.stdout)
-            
-            # Hostları işle
-            for host in root.findall('host'):
-                ip_addr = host.find('address').get('addr')
+                # XML çıktısını parse et
+                return self._parse_nmap_xml(result.stdout)
                 
-                # Host durumu
-                status = host.find('status').get('state')
-                if status != 'up':
+            except subprocess.TimeoutExpired:
+                console.print("[red]❌ Tarama zaman aşımına uğradı![/red]")
+                return None
+            except Exception as e:
+                console.print(f"[red]❌ Tarama hatası: {str(e)}[/red]")
+                return None
+    
+    def _parse_nmap_xml(self, xml_output):
+        """Nmap XML çıktısını parse et"""
+        try:
+            root = ET.fromstring(xml_output)
+            
+            results = {
+                'scan_date': datetime.now().isoformat(),
+                'command': root.get('args', ''),
+                'hosts': {}
+            }
+            
+            # Her host için
+            for host in root.findall('host'):
+                ip = None
+                hostname = ''
+                
+                # IP adresini bul
+                address = host.find('address')
+                if address is not None and address.get('addrtype') == 'ipv4':
+                    ip = address.get('addr')
+                
+                if not ip:
                     continue
                 
-                # Hostname
-                hostname = 'unknown'
+                # Hostname'i bul
                 hostnames = host.find('hostnames')
                 if hostnames is not None:
                     hostname_elem = hostnames.find('hostname')
                     if hostname_elem is not None:
-                        hostname = hostname_elem.get('name', 'unknown')
+                        hostname = hostname_elem.get('name', '')
                 
-                host_info = {
-                    'hostname': hostname,
-                    'state': status,
-                    'protocols': {'tcp': {}}  # Şimdilik sadece TCP
-                }
+                # Portları bul
+                ports_info = {'protocols': {}}
                 
-                # Portları işle
                 ports_elem = host.find('ports')
                 if ports_elem is not None:
                     for port in ports_elem.findall('port'):
+                        protocol = port.get('protocol', 'tcp')
                         port_id = port.get('portid')
-                        protocol = port.get('protocol')
                         
-                        state_elem = port.find('state')
-                        if state_elem is None or state_elem.get('state') != 'open':
+                        # Port durumu
+                        state = port.find('state')
+                        if state is None or state.get('state') != 'open':
                             continue
                         
-                        service_elem = port.find('service')
+                        # Servis bilgisi
+                        service = port.find('service')
+                        if service is not None:
+                            service_info = {
+                                'name': service.get('name', 'unknown'),
+                                'product': service.get('product', ''),
+                                'version': service.get('version', ''),
+                                'extrainfo': service.get('extrainfo', ''),
+                                'method': service.get('method', ''),
+                                'conf': service.get('conf', '')
+                            }
+                        else:
+                            service_info = {
+                                'name': 'unknown',
+                                'product': '',
+                                'version': '',
+                                'extrainfo': '',
+                                'method': '',
+                                'conf': ''
+                            }
                         
-                        port_info = {
-                            'state': 'open',
-                            'name': service_elem.get('name', 'unknown') if service_elem is not None else 'unknown',
-                            'product': service_elem.get('product', '') if service_elem is not None else '',
-                            'version': service_elem.get('version', '') if service_elem is not None else '',
-                            'extrainfo': service_elem.get('extrainfo', '') if service_elem is not None else ''
-                        }
+                        # Protocol bazlı portları ekle
+                        if protocol not in ports_info['protocols']:
+                            ports_info['protocols'][protocol] = {}
                         
-                        if protocol not in host_info['protocols']:
-                            host_info['protocols'][protocol] = {}
-                        
-                        host_info['protocols'][protocol][port_id] = port_info
+                        ports_info['protocols'][protocol][port_id] = service_info
                 
-                results['hosts'][ip_addr] = host_info
+                # OS detection
+                os_elem = host.find('os')
+                if os_elem is not None:
+                    os_match = os_elem.find('osmatch')
+                    if os_match is not None:
+                        ports_info['os'] = {
+                            'name': os_match.get('name', ''),
+                            'accuracy': os_match.get('accuracy', ''),
+                            'line': os_match.get('line', '')
+                        }
+                
+                results['hosts'][ip] = {
+                    'hostname': hostname,
+                    'protocols': ports_info.get('protocols', {}),
+                    'os': ports_info.get('os', {}),
+                    'port_count': sum(len(p) for p in ports_info.get('protocols', {}).values())
+                }
             
-            console.print(f"[bold green]✅ Tarama tamamlandı! {len(results['hosts'])} host bulundu.[/bold green]")
             return results
             
-        except subprocess.TimeoutExpired:
-            console.print("[bold red]❌ Zaman aşımı! Tarama çok uzun sürdü.[/bold red]")
-            return None
-        except Exception as e:
-            console.print(f"[bold red]❌ Hata: {str(e)}[/bold red]")
+        except ET.ParseError as e:
+            console.print(f"[red]XML parse hatası: {e}[/red]")
             return None
     
-    def save_results(self, results, filename=None):
-        """Sonuçları JSON olarak kaydet"""
-        if filename is None:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"scan_{timestamp}.json"
+    def save_results(self, results):
+        """Sonuçları JSON dosyasına kaydet"""
+        if not results:
+            return None
         
-        with open(filename, 'w') as f:
-            json.dump(results, f, indent=2)
+        # Dosya adı oluştur
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"scan_{timestamp}.json"
         
-        console.print(f"[green]📁 Sonuçlar kaydedildi: {filename}[/green]")
-        return filename
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            
+            console.print(f"[green]✅ Sonuçlar kaydedildi: {filename}[/green]")
+            return filename
+            
+        except Exception as e:
+            console.print(f"[red]❌ Dosya kaydetme hatası: {e}[/red]")
+            return None
     
     def load_results(self, filename):
-        """Önceki tarama sonuçlarını yükle"""
+        """JSON dosyasından sonuçları yükle"""
         try:
-            with open(filename, 'r') as f:
+            with open(filename, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            console.print(f"[red]❌ Dosya yüklenemedi: {str(e)}[/red]")
+            console.print(f"[red]❌ Dosya yükleme hatası: {e}[/red]")
             return None
     
-    def quick_scan(self, targets):
-        """Hızlı tarama (en popüler portlar)"""
-        return self.scan_targets(targets, ports="top100", arguments="-sV -T4 --top-ports 100")
+    def display_summary(self, results):
+        """Tarama sonuçlarını özetle"""
+        if not results:
+            return
+        
+        table = Table(title="📊 Tarama Özeti")
+        table.add_column("IP Adresi", style="cyan")
+        table.add_column("Hostname", style="green")
+        table.add_column("Açık Port", style="yellow")
+        table.add_column("Servis", style="magenta")
+        table.add_column("Versiyon", style="blue")
+        
+        total_ports = 0
+        for ip, host in results['hosts'].items():
+            for protocol, ports in host['protocols'].items():
+                for port, service in ports.items():
+                    total_ports += 1
+                    table.add_row(
+                        ip,
+                        host['hostname'][:20] if host['hostname'] else '-',
+                        f"{port}/{protocol}",
+                        service['name'],
+                        f"{service['product']} {service['version']}".strip() or '-'
+                    )
+        
+        console.print(f"\n[bold]Toplam Host: {len(results['hosts'])} | Toplam Açık Port: {total_ports}[/bold]")
+        console.print(table)
